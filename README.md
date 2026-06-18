@@ -1,4 +1,4 @@
-<img src="/res/sh4rk-logo.png" width="200" />
+<img src="/res/sh4rk-logo.png" width="500" />
 
 sh4rk-AI
 ========
