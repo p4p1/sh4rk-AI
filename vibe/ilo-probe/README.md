@@ -1,4 +1,7 @@
 # ilo_probe
+
+It cost me 0.14$ to vibecode!
+
 Unauthenticated recon tool for HPE iLO management interfaces (BMC fleet triage).
 ilo_probe pulls the two endpoints that iLO serves without authentication —
 `/redfish/v1/` and `/xmldata?item=all` — extracts firmware version, hardware

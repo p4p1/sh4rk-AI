@@ -1,30 +1,34 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 # Made by papi
-# Created on: Wed 14 Oct 2026 01:56:11 PM CEST
+# Created on: Wed 14 Oct 2026 02:31:48 PM CEST
 # ilo-probe.py
 # Description:
 #  Full disclosure I did not code any of this I probably could've but I got GLM-5.3
 #  to just give it out for me on a pentest.
 
 """ilo_probe.py - Unauthenticated iLO fleet recon: /redfish/v1/ + /xmldata?item=all
-Probes HPE iLO management interfaces for firmware version, IPMI-over-LAN state,
-and known CVE ranges. Never authenticates, so it is lockout-safe to run
-against an entire fleet.
+Stage 1 (discovery):   -generate FILE   -> prints confirmed-iLO hosts to stdout
+Stage 2 (assessment):  -ip / -f         -> firmware, IPMI state, CVE classification
 Usage:
-  ./ilo_probe.py -ip 172.17.3.142
+  ./ilo_probe.py -generate urls.txt > targets.txt
   ./ilo_probe.py -f targets.txt -o results.csv
-  ./ilo_probe.py -f targets.txt --threads 20 --timeout 5 -o results.csv
-Targets file: one IP/hostname per line, '#' comments allowed.
+  # or as a pipeline:
+  ./ilo_probe.py -generate urls.txt | ./ilo_probe.py -f - -o results.csv
+URLs file: one http(s)://link/ per line. Confirmed iLO hosts go to stdout
+(clean, one per line); classification chatter goes to stderr, so stdout
+always pipes cleanly.
 """
 import argparse
 import csv
 import json
+import re
 import ssl
 import sys
 import urllib.request
 import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from urllib.parse import urlsplit
 # (CVE, manager_type_prefix, (min_inclusive, max_exclusive), summary)
 # min/max are version tuples; None = unbounded on that side.
 CVE_DB = [
@@ -38,8 +42,9 @@ CVE_DB = [
      "Connection header overflow -> auth bypass / RCE (iLO 4 <2.53)"),
 ]
 CSV_FIELDS = ["ip", "status", "manager", "firmware", "fqdn", "product",
-             "serial", "ilo_serial", "ipmi_lan", "cves"]
-
+              "serial", "ilo_serial", "ipmi_lan", "cves"]
+TITLE_RE = re.compile(r"<title[^>]*>(.*?)</title>", re.I | re.S)
+ILO_TITLE_RE = re.compile(r"\bilo\b|integrated lights[- ]?out", re.I)
 def fw_tuple(version: str):
     """'1.75' -> (1, 75). Digit prefix per component, zero-padded to len 2."""
     parts = []
@@ -64,6 +69,53 @@ def fetch(url: str, timeout: int) -> bytes:
     )
     with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:
         return resp.read()
+# ---------------------------------------------------------------- discovery
+def extract_host(line: str):
+    """'http://172.17.3.142/' -> '172.17.3.142' (port kept if present)."""
+    line = line.split("#", 1)[0].strip()
+    if not line:
+        return None
+    if "://" in line:
+        netloc = urlsplit(line).netloc
+        return netloc or None
+    return line  # bare ip, hostname, or ip:port
+def is_ilo(host: str, timeout: int):
+    """Fetch the root page, follow redirects, title-check for iLO.
+    Returns (result, title): result True/False if we got a page,
+    None if the host was unreachable on both schemes.
+    """
+    for scheme in ("https", "http"):
+        try:
+            body = fetch(f"{scheme}://{host}/", timeout)
+        except Exception:
+            continue  # scheme failed, try the other
+        m = TITLE_RE.search(body.decode("utf-8", "replace"))
+        title = m.group(1).strip() if m else ""
+        return bool(ILO_TITLE_RE.search(title)), title
+    return None, ""
+def generate(path: str, timeout: int) -> int:
+    """Classify a URL/host list; print confirmed iLOs to stdout."""
+    with open(path, "r", encoding="utf-8") as fh:
+        lines = fh.readlines()
+    seen, found = set(), 0
+    for line in lines:
+        host = extract_host(line)
+        if not host or host in seen:
+            continue
+        seen.add(host)
+        result, title = is_ilo(host, timeout)
+        if result is None:
+            print(f"[ ?  ] {host:<24} unreachable", file=sys.stderr)
+        elif result:
+            print(f"[ +  ] {host:<24} title: {title!r}", file=sys.stderr)
+            print(host)
+            found += 1
+        else:
+            print(f"[ -  ] {host:<24} title: {title!r}", file=sys.stderr)
+    print(f"[*] {found} iLO host(s) confirmed of {len(seen)} checked",
+          file=sys.stderr)
+    return 0
+# -------------------------------------------------------------- assessment
 def cve_matches(manager_type: str, fw: tuple) -> list:
     out = []
     for cve, mgr, (lo, hi), _summary in CVE_DB:
@@ -122,12 +174,16 @@ def probe_host(ip: str, timeout: int) -> dict:
         rec["status"] = "no-version"
     return rec
 def load_targets(path: str) -> list:
+    if path == "-":  # stdin — enables pipeline from -generate
+        raw = sys.stdin.readlines()
+    else:
+        with open(path, "r", encoding="utf-8") as fh:
+            raw = fh.readlines()
     targets = []
-    with open(path, "r", encoding="utf-8") as fh:
-        for line in fh:
-            line = line.split("#", 1)[0].strip()
-            if line:
-                targets.append(line)
+    for line in raw:
+        t = line.split("#", 1)[0].strip()
+        if t:
+            targets.append(t)
     return targets
 def print_rec(rec: dict):
     tag = {"vulnerable": "[VULN]", "ok": "[ OK ]",
@@ -143,23 +199,7 @@ def print_rec(rec: dict):
         if rec["cves"]:
             line += f"  -> {rec['cves']}"
     print(line)
-def main() -> int:
-    ap = argparse.ArgumentParser(
-        description="Unauthenticated iLO fleet recon (Redfish root + xmldata). "
-                    "Lockout-safe: never sends credentials.")
-    tgt = ap.add_mutually_exclusive_group(required=True)
-    tgt.add_argument("-ip", metavar="HOST",
-                     help="single target IP/hostname")
-    tgt.add_argument("-f", metavar="FILE",
-                     help="target list file, one host per line")
-    ap.add_argument("-o", "--output", metavar="CSV",
-                    help="write results to CSV")
-    ap.add_argument("--threads", type=int, default=10,
-                    help="concurrent probes (default: 10)")
-    ap.add_argument("--timeout", type=int, default=10,
-                    help="per-request timeout in seconds (default: 10)")
-    args = ap.parse_args()
-    targets = [args.ip] if args.ip else load_targets(args.f)
+def sweep(targets: list, args) -> int:
     print(f"[*] probing {len(targets)} target(s), "
           f"{args.threads} threads, {args.timeout}s timeout")
     records = []
@@ -170,7 +210,7 @@ def main() -> int:
             rec = fut.result()
             records.append(rec)
             print_rec(rec)
-    # keep CSV in input-file order so it diffs cleanly against the target list
+    # keep CSV in input order so it diffs cleanly against the target list
     order = {t: i for i, t in enumerate(targets)}
     records.sort(key=lambda r: order.get(r["ip"], 1 << 30))
     if args.output:
@@ -184,5 +224,28 @@ def main() -> int:
     print(f"[*] summary: {len(records)} probed, "
           f"{vuln} vulnerable, {dead} unreachable")
     return 0
+def main() -> int:
+    ap = argparse.ArgumentParser(
+        description="Unauthenticated iLO fleet recon (Redfish root + xmldata). "
+                    "Lockout-safe: never sends credentials.")
+    tgt = ap.add_mutually_exclusive_group(required=True)
+    tgt.add_argument("-ip", metavar="HOST",
+                     help="assess a single target IP/hostname")
+    tgt.add_argument("-f", metavar="FILE",
+                     help="assess target list file ('-' for stdin)")
+    tgt.add_argument("-generate", metavar="FILE",
+                     help="discovery: classify URL/host list, print confirmed "
+                          "iLO hosts to stdout (chatter to stderr)")
+    ap.add_argument("-o", "--output", metavar="CSV",
+                    help="write assessment results to CSV")
+    ap.add_argument("--threads", type=int, default=10,
+                    help="concurrent probes (default: 10)")
+    ap.add_argument("--timeout", type=int, default=10,
+                    help="per-request timeout in seconds (default: 10)")
+    args = ap.parse_args()
+    if args.generate:
+        return generate(args.generate, args.timeout)
+    targets = [args.ip] if args.ip else load_targets(args.f)
+    return sweep(targets, args)
 if __name__ == "__main__":
     sys.exit(main())
