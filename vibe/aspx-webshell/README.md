@@ -1,6 +1,6 @@
 # aspx webshell — single-file command console
 
-*It cost me 0.24$ to vibecode!*
+*It cost me 0.24$ to vibe-edit! orignialy vibecoded by @jakobfriedl*
 
 One `.aspx` file. Runs commands on a Windows/IIS host, renders a host-info
 panel, and accepts the same request over both GET and POST — two channels
