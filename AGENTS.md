@@ -19,7 +19,7 @@ Most content here is offensive-security oriented (red teaming, pentest tooling, 
 ## Conventions
 
 - New skill file → `skills/<name>.md`, structured like `template/master_prompt.md` (Who you are → Coding convention → Who you are talking to → The project → Constraints). See `skills/report-writter.md` for a filled-in example.
-- New vibe project → `vibe/<name>/` with a thorough `README.md` (look at existing ones: usage, options, output, operational notes, legal note). Fun title + "It cost me X$ to vibecode!" tagline is the house style.
+- New vibe project → `vibe/<name>/` with a thorough `README.md` (look at existing ones: usage, options, output, operational notes, legal note). Fun title + "It cost me X$ to vibecode!" tagline is the house style — and update the vibe tax table in the root `README.md` when a new tool lands.
 - **C coding style** (from the template, applies to any C project here):
   - Never `goto`, ever. Proper return-case management instead.
   - No `typedef` — not for structs, not for function pointers. Everything inline and explicit.
