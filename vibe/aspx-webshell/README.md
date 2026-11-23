@@ -1,6 +1,6 @@
 # aspx webshell — single-file command console
 
-*It cost me 0.24$ to vibe-edit! orignialy vibecoded by @jakobfriedl*
+*It cost me 0.30$ to vibe-edit! orignialy vibecoded by @jakobfriedl*
 
 One `.aspx` file. Runs commands on a Windows/IIS host, renders a host-info
 panel, and accepts the same request over both GET and POST — two channels
@@ -22,25 +22,34 @@ Loading the page with no parameters runs nothing and shows host info only
 
 The file/subdirectory listing is dynamic: it defaults to the page's own
 folder (`Server.MapPath(".")`) and follows the optional `dir` parameter.
+Directories in the listing navigate; every file is a download link
+(`action=download`); an upload form under the listing posts into the
+folder currently shown — see [File transfer](#file-transfer-download--upload).
 
 
 ## Parameters
 
-| Param       | Required     | Values             | Meaning                                             |
-|-------------|--------------|--------------------|-----------------------------------------------------|
-| `action`    | yes          | `runUpdate`        | Gate. Absent → info-only page, nothing executes      |
-| `mode`      | no           | `cmd` (default)    | `cmdargs` → `cmd.exe /c <cmdargs>`                  |
-|             |              | `ps`               | `cmdargs` → `powershell.exe -NoP -NonI -C "<args>"` |
-|             |              | `custom`           | run `custombin` with `cmdargs` as its arguments     |
-| `cmdargs`   | per mode     | string             | The command / arguments                             |
-| `custombin` | mode=custom  | path               | Full path to the binary                             |
-| `dir`      | no           | path               | Directory for the listing; default = the folder the page lives in |
+| Param       | Required        | Values             | Meaning                                             |
+|-------------|-----------------|--------------------|-----------------------------------------------------|
+| `action`    | yes             | `runUpdate`        | Gate. Absent → info-only page, nothing executes     |
+|             |                 | `download`         | Stream `file` back as an attachment, no page render |
+|             |                 | `upload`           | Accept a multipart file into `dir`                 |
+| `mode`      | no              | `cmd` (default)    | `cmdargs` → `cmd.exe /c <cmdargs>`                  |
+|             |                 | `ps`               | `cmdargs` → `powershell.exe -NoP -NonI -C "<args>"` |
+|             |                 | `custom`           | run `custombin` with `cmdargs` as its arguments     |
+| `cmdargs`   | per mode        | string             | The command / arguments                             |
+| `custombin` | mode=custom     | path               | Full path to the binary                             |
+| `dir`       | no              | path               | Directory for the listing + upload target; default = the folder the page lives in |
+| `file`      | action=download | path               | Absolute path of the file to stream                 |
 
 
-All four can arrive in the query string (GET) or an urlencoded body (POST).
-The page picks the bag by method: POST reads the body, everything else
-reads the query string. Params split across both in one request are **not**
-merged.
+All of them can arrive in the query string (GET) or an urlencoded body
+(POST). The page picks the bag by method: POST reads the body, everything
+else reads the query string. Params split across both in one request are
+**not** merged. One exception: the uploaded file only exists inside a
+`multipart/form-data` body, so `action=upload` requests are POST by
+nature (multipart still feeds `Request.Form`, so `action`/`dir` ride
+along as regular fields).
 
 ## Browser use (GET console)
 
@@ -57,6 +66,50 @@ which means:
 - identical commands collapse into a single history entry (moved to top);
   distinct args are distinct entries
 - hand-editing the URL works too: encode `&` as `%26`, spaces as `%20` or `+`
+
+## File transfer (download / upload)
+
+The listing doubles as a minimal file manager: directories are `dir` links
+that navigate, every file is an `action=download` link (`target="_blank"`,
+so the console stays put), and the upload form under the listing posts
+into the directory currently shown.
+
+### Download
+
+The link is `?action=download&file=<absolute path>`. The page clears
+itself, streams the file with `application/octet-stream` +
+`Content-Disposition: attachment` and aborts — nothing else renders. Same
+request in curl:
+
+    curl -sG "$TARGET" \
+      --data-urlencode "action=download" \
+      --data-urlencode "file=C:\inetpub\wwwroot\test.aspx" \
+      -o test.aspx
+
+Bad path → no attachment; the normal page renders with the error in the
+status `<div>` instead. Downloads are GETs, so the full remote path lands
+in the IIS logs — see [Logging](#logging--detection).
+
+### Upload
+
+`multipart/form-data` POST — `curl -F` does the encoding:
+
+    curl -s -F "action=upload" \
+      -F "dir=C:\inetpub\wwwroot" \
+      -F "upfile=@C:\tools\nc.exe" \
+      "$TARGET"
+
+The file is saved into `dir` under its client-side name only
+(`Path.GetFileName` — any folder part of the client path is dropped),
+overwriting silently if it already exists. The page re-renders with
+`Uploaded N bytes to <path>` in the status `<div>` (`class="result"`)
+or `Upload failed: ...` (`class="error"`). Extract with:
+
+    | grep -oE '(Uploaded|Upload failed)[^<]*'
+
+Ceiling: uploads inherit the POST channel's ~4 MB `maxRequestLength`
+default — bigger bodies die with 404.13 before the page runs. Raise it in
+`web.config` if you need more headroom.
 
 ## curl
 
@@ -166,7 +219,9 @@ A JSON body leaves `Request.Form` empty and the page renders info-only.
 
 Oversized GETs die before the page runs: IIS request filtering rejects
 >2048-byte query strings (404.15) and ASP.NET separately rejects
->2048-char ones. Raise both if you need more headroom.
+>2048-char ones. Oversized uploads die the same way on the POST side —
+`maxRequestLength` (~4 MB) trips with 404.13. Raise both if you need more
+headroom.
 
 ## Gotchas
 
@@ -186,10 +241,11 @@ Loud by design, and that cuts both ways. Every GET command lands in full
 text in the IIS W3C logs (`cs-uri-query` is enabled by default) under
 `C:\inetpub\logs\LogFiles\W3SVC*\u_ex*.log`, plus the browser's own
 history — which is the point of the GET channel, and also why GET
-webshells are trivial to hunt: a defender greps those logs for
-`action=runUpdate` and gets your entire session. POST bodies aren't
-logged by IIS, which makes that channel quieter but not stealthy — WAFs,
-EDR and proxies still see everything.
+webshells are trivial to hunt: a defender greps those logs for `action=`
+and gets your entire session — every command **and** the full path of
+every file pulled through `action=download`. POST bodies aren't logged
+by IIS, which makes that channel (uploads included) quieter but not
+stealthy — WAFs, EDR and proxies still see everything.
 
 Keep it in the lab.
 

