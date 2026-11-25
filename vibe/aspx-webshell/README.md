@@ -1,12 +1,26 @@
 # aspx webshell — single-file command console
 
 *It cost me 0.30$ to vibe-edit! orignialy vibecoded by @jakobfriedl*
+*It cost me 0.09$ to vibe-edit the hacker cringe version!*
 
 One `.aspx` file. Runs commands on a Windows/IIS host, renders a host-info
 panel, and accepts the same request over both GET and POST — two channels
 with different tradeoffs. GET is the interactive channel: every command is
 a URL, so the browser history doubles as command history. POST is the
 tooling channel: large payloads, nothing in the query string.
+
+Two skins, one shell: `index.aspx` (the straight version — looks like a
+boring test page) and `h4x0r.aspx` (the 3l1t3 cringe edition: black
+background, matrix rain, CRT scanlines, glitch title, full leetspeak —
+the reskin cost another 0.09$ of vibes). Identical logic, identical
+params, identical `command_result` markup: point `TARGET` at either file
+and every client example below just works. `index.aspx` stays fully
+self-contained; the cringe edition additionally pulls the Creepster and
+VT323 TTFs from `fonts.gstatic.com` and a spinning cat from
+`media.giphy.com` — client-side only (the operator's browser fetches
+them, the target serves nothing external), but a proxy watching the
+operator sees google + giphy traffic next to shell traffic. Cringe has
+a price.
 
 > Authorized targets only. This is a lab / reproduction tool, and it is
 > deliberately loud — see [Logging](#logging--detection).
